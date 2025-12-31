@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 	from frappe.core.doctype.docfield.docfield import DocField
 
 
-DOCUMENT_LOCK_EXPIRTY = 3 * 60 * 60  # All locks expire in 3 hours automatically
+DOCUMENT_LOCK_EXPIRY = 3 * 60 * 60  # All locks expire in 3 hours automatically
 DOCUMENT_LOCK_SOFT_EXPIRY = 30 * 60  # Let users force-unlock after 30 minutes
 
 
@@ -146,7 +146,7 @@ class Document(BaseDocument):
 		if not file_lock.lock_exists(signature):
 			return False
 
-		if file_lock.lock_age(signature) > DOCUMENT_LOCK_EXPIRTY:
+		if file_lock.lock_age(signature) > DOCUMENT_LOCK_EXPIRY:
 			return False
 
 		return True
@@ -195,7 +195,7 @@ class Document(BaseDocument):
 			children = (
 				frappe.db.get_values(
 					df.options,
-					{"parent": self.name, "parenttype": self.doctype, "parentfield": df.fieldname},
+					{"parent": str(self.name), "parenttype": self.doctype, "parentfield": df.fieldname},
 					"*",
 					as_dict=True,
 					order_by="idx asc",
@@ -297,9 +297,9 @@ class Document(BaseDocument):
 		self._set_defaults()
 		self.set_user_and_timestamp()
 		self.set_docstatus()
+		self.check_permission("create")
 		self.check_if_latest()
 		self._validate_links()
-		self.check_permission("create")
 		self.run_method("before_insert")
 		self.set_new_name(set_name=set_name, set_child_names=set_child_names)
 		self.set_parent_in_children()
@@ -470,7 +470,7 @@ class Document(BaseDocument):
 
 	def update_child_table(self, fieldname: str, df: Optional["DocField"] = None):
 		"""sync child table for given fieldname"""
-		df: "DocField" = df or self.meta.get_field(fieldname)
+		df: DocField = df or self.meta.get_field(fieldname)
 		all_rows = self.get(df.fieldname)
 
 		# delete rows that do not match the ones in the document
@@ -484,7 +484,7 @@ class Document(BaseDocument):
 			tbl = frappe.qb.DocType(df.options)
 			qry = (
 				frappe.qb.from_(tbl)
-				.where(tbl.parent == self.name)
+				.where(tbl.parent == str(self.name))
 				.where(tbl.parenttype == self.doctype)
 				.where(tbl.parentfield == fieldname)
 				.delete()
@@ -627,7 +627,7 @@ class Document(BaseDocument):
 		self._fix_rating_value()
 		self._validate_code_fields()
 		self._sync_autoname_field()
-		self._extract_images_from_editor()
+		self._extract_images_from_text_editor()
 		self._sanitize_content()
 		self._save_passwords()
 		self.validate_workflow()
@@ -640,7 +640,7 @@ class Document(BaseDocument):
 			d._fix_rating_value()
 			d._validate_code_fields()
 			d._sync_autoname_field()
-			d._extract_images_from_editor()
+			d._extract_images_from_text_editor()
 			d._sanitize_content()
 			d._save_passwords()
 		if self.is_new():
@@ -721,9 +721,13 @@ class Document(BaseDocument):
 
 	def is_child_table_same(self, fieldname):
 		"""Validate child table is same as original table before saving"""
+
+		if self.is_new():
+			return False
+
+		same = True
 		value = self.get(fieldname)
 		original_value = self._doc_before_save.get(fieldname)
-		same = True
 
 		if len(original_value) != len(value):
 			same = False
@@ -1509,10 +1513,14 @@ class Document(BaseDocument):
 
 			return view_log
 
-	def log_error(self, title=None, message=None):
+	def log_error(self, title=None, message=None, *, defer_insert=False):
 		"""Helper function to create an Error Log"""
 		return frappe.log_error(
-			message=message, title=title, reference_doctype=self.doctype, reference_name=self.name
+			message=message,
+			title=title,
+			reference_doctype=self.doctype,
+			reference_name=self.name,
+			defer_insert=defer_insert,
 		)
 
 	def get_signature(self):
@@ -1596,7 +1604,7 @@ class Document(BaseDocument):
 		signature = self.get_signature()
 		if file_lock.lock_exists(signature):
 			lock_exists = True
-			if file_lock.lock_age(signature) > DOCUMENT_LOCK_EXPIRTY:
+			if file_lock.lock_age(signature) > DOCUMENT_LOCK_EXPIRY:
 				file_lock.delete_lock(signature)
 				lock_exists = False
 			if timeout:

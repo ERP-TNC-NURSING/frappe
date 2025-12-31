@@ -87,9 +87,8 @@ class AutoRepeat(Document):
 
 	def before_insert(self):
 		if not frappe.flags.in_test:
-			start_date = getdate(self.start_date)
-			today_date = getdate(today())
-			if start_date <= today_date:
+			today_date = getdate()
+			if getdate(self.start_date) < today_date:
 				self.start_date = today_date
 
 	def after_save(self):
@@ -134,14 +133,18 @@ class AutoRepeat(Document):
 			return
 
 		if self.end_date:
+			end_date = getdate(self.end_date)
+
 			self.validate_from_to_dates("start_date", "end_date")
 
-		if self.end_date == self.start_date:
-			frappe.throw(
-				_("{0} should not be same as {1}").format(
-					frappe.bold(_("End Date")), frappe.bold(_("Start Date"))
+			if end_date == getdate():
+				frappe.throw(_("End Date cannot be today."))
+			if end_date == getdate(self.start_date):
+				frappe.throw(
+					_("{0} should not be same as {1}").format(
+						frappe.bold(_("End Date")), frappe.bold(_("Start Date"))
+					)
 				)
-			)
 
 	def validate_email_id(self):
 		if self.notify_by_email:
@@ -236,6 +239,11 @@ class AutoRepeat(Document):
 		reference_doc = frappe.get_doc(self.reference_doctype, self.reference_document)
 		new_doc = frappe.copy_doc(reference_doc, ignore_no_copy=False)
 		self.update_doc(new_doc, reference_doc)
+		new_doc.flags.updater_reference = {
+			"doctype": self.doctype,
+			"docname": self.name,
+			"label": _("via Auto Repeat"),
+		}
 		new_doc.insert(ignore_permissions=True)
 
 		if self.submit_on_creation:
@@ -483,9 +491,7 @@ def make_auto_repeat_entry():
 	if not jobs or enqueued_method not in jobs[frappe.local.site]:
 		date = getdate(today())
 		data = get_auto_repeat_entries(date)
-		frappe.enqueue(enqueued_method, data=data)
-		# Set auto-repeat to complete when all auto-repeats are added to the queue
-		set_auto_repeat_as_completed(data)
+		frappe.enqueue(enqueued_method, data=data, queue="long")
 
 
 def create_repeated_entries(data):
@@ -501,6 +507,10 @@ def create_repeated_entries(data):
 			if schedule_date and not doc.disabled:
 				frappe.db.set_value("Auto Repeat", doc.name, "next_schedule_date", schedule_date)
 
+		if doc.is_completed():
+			doc.status = "Completed"
+			doc.save()
+
 
 def get_auto_repeat_entries(date=None):
 	if not date:
@@ -515,14 +525,6 @@ def get_auto_repeat_entries(date=None):
 		& ((auto_repeat.end_date >= auto_repeat.next_schedule_date) | (auto_repeat.end_date.isnull()))
 	)
 	return query.run(as_dict=1)
-
-
-def set_auto_repeat_as_completed(auto_repeat):
-	for entry in auto_repeat:
-		doc = frappe.get_doc("Auto Repeat", entry.name)
-		if doc.is_completed():
-			doc.status = "Completed"
-			doc.save()
 
 
 @frappe.whitelist()
@@ -575,14 +577,15 @@ def update_reference(docname: str, reference: str):
 	return "success"  # backward compatbility
 
 
-@frappe.whitelist()
-def generate_message_preview(reference_dt, reference_doc, message=None, subject=None):
+@frappe.whitelist(methods=["POST"])
+def generate_message_preview(name: str):
 	frappe.has_permission("Auto Repeat", "write", throw=True)
-	doc = frappe.get_doc(reference_dt, reference_doc)
+	auto_repeat = frappe.get_doc("Auto Repeat", str(name))
+	doc = frappe.get_doc(auto_repeat.reference_doctype, auto_repeat.reference_document)
 	doc.check_permission()
 	subject_preview = _("Please add a subject to your email")
-	msg_preview = frappe.render_template(message, {"doc": doc})
-	if subject:
-		subject_preview = frappe.render_template(subject, {"doc": doc})
+	msg_preview = frappe.render_template(auto_repeat.message, {"doc": doc})
+	if auto_repeat.subject:
+		subject_preview = frappe.render_template(auto_repeat.subject, {"doc": doc})
 
 	return {"message": msg_preview, "subject": subject_preview}

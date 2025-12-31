@@ -59,6 +59,7 @@ class EmailAccount(Document):
 		from frappe.types import DF
 
 		add_signature: DF.Check
+		always_bcc: DF.Data | None
 		always_use_account_email_id_as_sender: DF.Check
 		always_use_account_name_as_sender_name: DF.Check
 		append_emails_to_sent_folder: DF.Check
@@ -861,6 +862,20 @@ def pull(now=False):
 					job_name=job_name,
 					email_account=email_account.name,
 				)
+
+
+@frappe.whitelist()
+def pull_emails(email_account: str) -> None:
+	"""Pull emails from given email account."""
+	frappe.has_permission("Email Account", "read", throw=True)
+
+	job_name = f"pull_from_email_account|{email_account}"
+	queued_jobs = get_jobs(site=frappe.local.site, key="job_name")[frappe.local.site]
+
+	if job_name not in queued_jobs:
+		pull_from_email_account(email_account)
+	else:
+		frappe.msgprint(_("Emails are already being pulled from this account."))
 
 
 def pull_from_email_account(email_account):

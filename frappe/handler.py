@@ -11,6 +11,7 @@ import frappe
 import frappe.sessions
 import frappe.utils
 from frappe import _, is_whitelisted, ping
+from frappe.core.doctype.file.utils import find_file_by_url
 from frappe.core.doctype.server_script.server_script_utils import get_server_script_map
 from frappe.monitor import add_data_to_monitor
 from frappe.permissions import check_doctype_permission
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 ALLOWED_MIMETYPES = (
 	"image/png",
 	"image/jpeg",
+	"image/gif",
 	"application/pdf",
 	"application/msword",
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -62,10 +64,7 @@ def handle():
 
 def execute_cmd(cmd, from_async=False):
 	"""execute a request as python module"""
-	for hook in reversed(frappe.get_hooks("override_whitelisted_methods", {}).get(cmd, [])):
-		# override using the last hook
-		cmd = hook
-		break
+	cmd = frappe.override_whitelisted_method(cmd)
 
 	# via server script
 	server_script = get_server_script_map().get("_api", {}).get(cmd)
@@ -177,7 +176,7 @@ def upload_file():
 		else:
 			raise frappe.PermissionError
 	else:
-		user: "User" = frappe.get_doc("User", frappe.session.user)
+		user: User = frappe.get_doc("User", frappe.session.user)
 		ignore_permissions = False
 
 	files = frappe.request.files
@@ -228,7 +227,7 @@ def upload_file():
 	if content is not None and (frappe.session.user == "Guest" or (user and not user.has_desk_access())):
 		filetype = guess_type(filename)[0]
 		if filetype not in ALLOWED_MIMETYPES:
-			frappe.throw(_("You can only upload JPG, PNG, PDF, TXT, CSV or Microsoft documents."))
+			frappe.throw(_("You can only upload JPG, PNG, GIF, PDF, TXT, CSV or Microsoft documents."))
 
 	if method:
 		method = frappe.get_attr(method)
@@ -279,8 +278,8 @@ def download_file(file_url: str):
 	Endpoints : download_file, frappe.core.doctype.file.file.download_file
 	URL Params : file_name = /path/to/file relative to site path
 	"""
-	file: "File" = frappe.get_doc("File", {"file_url": file_url})
-	if not file.is_downloadable():
+	file = find_file_by_url(file_url)
+	if not file:
 		raise frappe.PermissionError
 
 	frappe.local.response.filename = os.path.basename(file_url)

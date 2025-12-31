@@ -11,7 +11,7 @@ from frappe import _
 from frappe.desk.reportview import validate_args
 from frappe.model.db_query import check_parent_permission
 from frappe.model.utils import is_virtual_doctype
-from frappe.utils import get_safe_filters
+from frappe.utils import attach_expanded_links, get_safe_filters
 from frappe.utils.deprecations import deprecated
 
 if TYPE_CHECKING:
@@ -37,6 +37,7 @@ def get_list(
 	debug: bool = False,
 	as_dict: bool = True,
 	or_filters=None,
+	expand=None,
 ):
 	"""Returns a list of records by filters, fields, ordering and limit
 
@@ -64,7 +65,17 @@ def get_list(
 	)
 
 	validate_args(args)
-	return frappe.get_list(**args)
+	_list = frappe.get_list(**args)
+
+	if not expand:
+		return _list
+
+	if fields and not fields[0] == "*":
+		expand = [f for f in expand if f in fields]
+
+	attach_expanded_links(doctype, _list, expand)
+
+	return _list
 
 
 @frappe.whitelist()
@@ -295,8 +306,8 @@ def bulk_update(docs):
 
 
 @frappe.whitelist()
-def has_permission(doctype, docname, perm_type="read"):
-	"""Returns a JSON with data whether the document has the requested permission
+def has_permission(doctype: str, docname: str, perm_type: str = "read"):
+	"""Return a JSON with data whether the document has the requested permission.
 
 	:param doctype: DocType of the document to be checked
 	:param docname: `name` of the document to be checked
@@ -306,8 +317,8 @@ def has_permission(doctype, docname, perm_type="read"):
 
 
 @frappe.whitelist()
-def get_doc_permissions(doctype, docname):
-	"""Returns an evaluated document permissions dict like `{"read":1, "write":1}`
+def get_doc_permissions(doctype: str, docname: str):
+	"""Return an evaluated document permissions dict like `{"read":1, "write":1}`.
 
 	:param doctype: DocType of the document to be evaluated
 	:param docname: `name` of the document to be evaluated
@@ -317,7 +328,7 @@ def get_doc_permissions(doctype, docname):
 
 
 @frappe.whitelist()
-def get_password(doctype, name, fieldname):
+def get_password(doctype: str, name: str, fieldname: str):
 	"""Return a password type property. Only applicable for System Managers
 
 	:param doctype: DocType of the document that holds the password
@@ -405,7 +416,7 @@ def attach_file(
 
 
 @frappe.whitelist()
-def is_document_amended(doctype, docname):
+def is_document_amended(doctype: str, docname: str):
 	if frappe.permissions.has_permission(doctype):
 		try:
 			return frappe.db.exists(doctype, {"amended_from": docname})

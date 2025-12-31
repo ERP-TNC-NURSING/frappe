@@ -14,6 +14,7 @@ Example:
 
 
 """
+
 import json
 import os
 from datetime import datetime
@@ -23,10 +24,10 @@ import click
 import frappe
 from frappe import _, _lt
 from frappe.model import (
+	NO_VALUE_FIELDS,
 	child_table_fields,
 	data_fieldtypes,
 	default_fields,
-	no_value_fields,
 	optional_fields,
 	table_fields,
 )
@@ -214,8 +215,8 @@ class Meta(Document):
 		return self._table_fields
 
 	def get_global_search_fields(self):
-		"""Returns list of fields with `in_global_search` set and `name` if set"""
-		fields = self.get("fields", {"in_global_search": 1, "fieldtype": ["not in", no_value_fields]})
+		"""Return list of fields with `in_global_search` set and `name` if set"""
+		fields = self.get("fields", {"in_global_search": 1, "fieldtype": ["not in", NO_VALUE_FIELDS]})
 		if getattr(self, "show_name_in_global_search", None):
 			fields.append(frappe._dict(fieldtype="Data", fieldname="name", label="Name"))
 
@@ -291,7 +292,7 @@ class Meta(Document):
 			link_fields = [df.fieldname for df in self.get_link_fields()]
 
 		for df in self.fields:
-			if df.fieldtype not in no_value_fields and getattr(df, "fetch_from", None):
+			if df.fieldtype not in NO_VALUE_FIELDS and getattr(df, "fetch_from", None):
 				if link_fieldname:
 					if df.fetch_from.startswith(link_fieldname + "."):
 						out.append(df)
@@ -553,11 +554,9 @@ class Meta(Document):
 				self.permissions = [Document(d) for d in custom_perms]
 
 	def get_fieldnames_with_value(self, with_field_meta=False, with_virtual_fields=False):
-		def is_value_field(docfield):
-			return not (
-				not with_virtual_fields
-				and docfield.get("is_virtual")
-				or docfield.fieldtype in no_value_fields
+		def is_value_field(df):
+			return (df.fieldtype not in NO_VALUE_FIELDS) and (
+				with_virtual_fields or not getattr(df, "is_virtual", False)
 			)
 
 		if with_field_meta:
@@ -632,7 +631,7 @@ class Meta(Document):
 
 	def get_permlevel_access(self, permission_type="read", parenttype=None, *, user=None):
 		has_access_to = []
-		roles = frappe.get_roles(user)
+		roles = set(frappe.get_roles(user))
 		for perm in self.get_permissions(parenttype):
 			if perm.role in roles and perm.get(permission_type):
 				if perm.permlevel not in has_access_to:
@@ -748,7 +747,7 @@ def is_single(doctype):
 	try:
 		return frappe.db.get_value("DocType", doctype, "issingle")
 	except IndexError:
-		raise Exception("Cannot determine whether %s is single" % doctype)
+		raise Exception("Cannot determine whether {} is single".format(doctype))
 
 
 def get_parent_dt(dt):
@@ -826,7 +825,7 @@ def get_field_precision(df, doc=None, currency=None):
 		precision = cint(frappe.db.get_default("currency_precision"))
 		if not precision:
 			number_format = frappe.db.get_default("number_format") or "#,###.##"
-			decimal_str, comma_str, precision = get_number_format_info(number_format)
+			_decimal_str, _comma_str, precision = get_number_format_info(number_format)
 	else:
 		precision = cint(frappe.db.get_default("float_precision")) or 3
 

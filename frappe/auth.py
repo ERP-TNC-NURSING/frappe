@@ -68,6 +68,9 @@ class HTTPRequest:
 		elif frappe.get_request_header("REMOTE_ADDR"):
 			frappe.local.request_ip = frappe.get_request_header("REMOTE_ADDR")
 
+		elif frappe.request and getattr(frappe.request, "remote_addr", None):
+			frappe.local.request_ip = frappe.request.remote_addr
+
 		else:
 			frappe.local.request_ip = "127.0.0.1"
 
@@ -99,7 +102,7 @@ class HTTPRequest:
 
 
 class LoginManager:
-	__slots__ = ("user", "info", "full_name", "user_type", "resume")
+	__slots__ = ("full_name", "info", "resume", "user", "user_type")
 
 	def __init__(self):
 		self.user = None
@@ -478,7 +481,10 @@ def validate_ip_address(user):
 		if frappe.local.request_ip.startswith(ip) or bypass_restrict_ip_check:
 			return
 
-	frappe.throw(_("Access not allowed from this IP Address"), frappe.AuthenticationError)
+	frappe.throw(
+		_("Access not allowed from this IP Address") + f": {frappe.local.request_ip}",
+		frappe.AuthenticationError,
+	)
 
 
 def get_login_attempt_tracker(key: str, raise_locked_exception: bool = True):
@@ -652,7 +658,7 @@ def validate_oauth(authorization_header):
 		required_scopes = frappe.db.get_value("OAuth Bearer Token", token, "scopes").split(
 			get_url_delimiter()
 		)
-		valid, oauthlib_request = get_oauth_server().verify_request(
+		valid, _oauthlib_request = get_oauth_server().verify_request(
 			uri, http_method, body, headers, required_scopes
 		)
 		if valid:
@@ -690,17 +696,22 @@ def validate_auth_via_api_keys(authorization_header):
 
 def validate_api_key_secret(api_key, api_secret, frappe_authorization_source=None):
 	"""frappe_authorization_source to provide api key and secret for a doctype apart from User"""
+	if not api_key or not api_secret:
+		raise frappe.AuthenticationError
+
 	doctype = frappe_authorization_source or "User"
-	doc = frappe.db.get_value(doctype=doctype, filters={"api_key": api_key}, fieldname=["name"])
-	if not doc:
+	docname = frappe.db.get_value(
+		doctype=doctype, filters={"api_key": api_key, "enabled": True}, fieldname=["name"]
+	)
+	if not docname:
 		raise frappe.AuthenticationError
 	form_dict = frappe.local.form_dict
-	doc_secret = get_decrypted_password(doctype, doc, fieldname="api_secret")
-	if api_secret == doc_secret:
+	doc_secret = get_decrypted_password(doctype, docname, fieldname="api_secret", raise_exception=False)
+	if doc_secret and api_secret == doc_secret:
 		if doctype == "User":
 			user = frappe.db.get_value(doctype="User", filters={"api_key": api_key}, fieldname=["name"])
 		else:
-			user = frappe.db.get_value(doctype, doc, "user")
+			user = frappe.db.get_value(doctype, docname, "user")
 		if frappe.local.login_manager.user in ("", "Guest"):
 			frappe.set_user(user)
 		frappe.local.form_dict = form_dict

@@ -36,7 +36,6 @@ frappe.ui.form.Layout = class Layout {
 			this.setup_tabbed_layout();
 		}
 
-		this.setup_tab_events();
 		this.frm && this.setup_tooltip_events();
 		this.render();
 	}
@@ -116,8 +115,9 @@ frappe.ui.form.Layout = class Layout {
 			// wrap in a block if `html` does not contain html tags
 			$html = $("<div class='form-message'></div>").text(html);
 		} else {
-			$html = $(html);
-			$html.addClass("form-message");
+			// Wrap in a block just in case the string does not begin with a tag
+			// as Jquery assumes it to be a CSS selector and breaks.
+			$html = $("<div class='form-message'>").html(html);
 		}
 
 		// Add close button to block if not permanent

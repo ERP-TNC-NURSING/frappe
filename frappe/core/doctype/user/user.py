@@ -20,6 +20,7 @@ from frappe.desk.notifications import clear_notifications
 from frappe.model.document import Document
 from frappe.query_builder import DocType
 from frappe.rate_limiter import rate_limit
+from frappe.sessions import clear_sessions
 from frappe.utils import (
 	cint,
 	escape_html,
@@ -31,12 +32,14 @@ from frappe.utils import (
 	now_datetime,
 	today,
 )
-from frappe.utils.data import sha256_hash, strip_html
+from frappe.utils.data import sha256_hash
 from frappe.utils.deprecations import deprecated
+from frappe.utils.html_utils import sanitize_html
 from frappe.utils.password import check_password, get_password_reset_limit
 from frappe.utils.password import update_password as _update_password
 from frappe.utils.user import get_system_managers
 from frappe.website.utils import get_home_page, is_signup_disabled
+from frappe.www.login import sanitize_redirect
 
 desk_properties = (
 	"search_bar",
@@ -256,12 +259,9 @@ class User(Document):
 		return self.name == frappe.session.user
 
 	def clean_name(self):
-		if self.first_name:
-			self.first_name = strip_html(self.first_name)
-		if self.middle_name:
-			self.middle_name = strip_html(self.middle_name)
-		if self.last_name:
-			self.last_name = strip_html(self.last_name)
+		for field in ("first_name", "middle_name", "last_name"):
+			if field_value := self.get(field):
+				self.set(field, sanitize_html(field_value, always_sanitize=True))
 
 	def set_full_name(self):
 		self.full_name = " ".join(filter(None, [self.first_name, self.last_name]))
@@ -393,7 +393,7 @@ class User(Document):
 
 	def get_fullname(self):
 		"""get first_name space last_name"""
-		return (self.first_name or "") + (self.first_name and " " or "") + (self.last_name or "")
+		return (self.first_name or "") + ((self.first_name and " ") or "") + (self.last_name or "")
 
 	def password_reset_mail(self, link):
 		reset_password_template = frappe.db.get_system_setting("reset_password_template")
@@ -453,8 +453,8 @@ class User(Document):
 		args.update(add_args)
 
 		sender = (
-			frappe.session.user not in STANDARD_USERS and get_formatted_email(frappe.session.user) or None
-		)
+			frappe.session.user not in STANDARD_USERS and get_formatted_email(frappe.session.user)
+		) or None
 
 		if custom_template:
 			from frappe.email.doctype.email_template.email_template import get_email_template
@@ -547,6 +547,13 @@ class User(Document):
 					note.remove(row)
 			note.save(ignore_permissions=True)
 
+		# Unlink user from all of its invitation docs
+		invites = frappe.db.get_all("User Invitation", filters={"email": self.name}, pluck="name")
+		for invite in invites:
+			invite_doc = frappe.get_doc("User Invitation", invite)
+			invite_doc.user = None
+			invite_doc.save(ignore_permissions=True)
+
 	def before_rename(self, old_name, new_name, merge=False):
 		# if merging, delete the old user notification settings
 		if merge:
@@ -585,6 +592,9 @@ class User(Document):
 
 		# set email
 		frappe.db.set_value("User", new_name, "email", new_name)
+
+		clear_sessions(user=old_name, force=True)
+		clear_sessions(user=new_name, force=True)
 
 	def append_roles(self, *roles):
 		"""Add roles to user"""
@@ -972,7 +982,9 @@ def sign_up(email: str, full_name: str, redirect_to: str) -> tuple[int, str]:
 		else:
 			return 0, _("Registered but disabled")
 	else:
-		if frappe.db.get_creation_count("User", 60) > 300:
+		max_signups_allowed_per_hour = cint(frappe.get_system_settings("max_signups_allowed_per_hour") or 300)
+		users_created_past_hour = frappe.db.get_creation_count("User", 60)
+		if users_created_past_hour >= max_signups_allowed_per_hour:
 			frappe.respond_as_web_page(
 				_("Temporarily Disabled"),
 				_(
@@ -998,12 +1010,12 @@ def sign_up(email: str, full_name: str, redirect_to: str) -> tuple[int, str]:
 		user.insert()
 
 		# set default signup role as per Portal Settings
-		default_role = frappe.db.get_single_value("Portal Settings", "default_role")
+		default_role = frappe.get_single_value("Portal Settings", "default_role")
 		if default_role:
 			user.add_roles(default_role)
 
 		if redirect_to:
-			frappe.cache.hset("redirect_after_login", user.name, redirect_to)
+			frappe.cache.hset("redirect_after_login", user.name, sanitize_redirect(redirect_to))
 
 		if user.flags.email_sent:
 			return 1, _("Please check your email for verification")
@@ -1172,7 +1184,27 @@ def handle_password_test_fail(feedback: dict):
 	suggestions = feedback.get("suggestions", [])
 	warning = feedback.get("warning", "")
 
-	frappe.throw(msg=" ".join([warning, *suggestions]), title=_("Invalid Password"))
+	# Add fallback suggestion if nothing provided
+	if not (suggestions or warning):
+		suggestions = [_("Better add a few more letters or another word")]
+
+	message_parts = []
+
+	if warning:
+		message_parts.append(f'<div class="alert alert-warning" role="alert">{warning}</div>')
+
+	if suggestions:
+		suggestions_html = (
+			'<ul style="margin: 0; padding-left: 1em;">'
+			+ "".join(f"<li>{suggestion}</li>" for suggestion in suggestions)
+			+ "</ul>"
+		)
+		message_parts.append(suggestions_html)
+
+	frappe.throw(
+		msg="".join(message_parts),
+		title=_("Password requirements not met"),
+	)
 
 
 def update_gravatar(name):
@@ -1291,7 +1323,7 @@ def generate_keys(user: str):
 	user_details.api_secret = api_secret
 	user_details.save()
 
-	return {"api_secret": api_secret}
+	return {"api_key": user_details.api_key, "api_secret": api_secret}
 
 
 @frappe.whitelist()

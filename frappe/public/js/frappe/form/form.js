@@ -412,7 +412,6 @@ frappe.ui.form.Form = class FrappeForm {
 			this.read_only = frappe.workflow.is_read_only(this.doctype, this.docname);
 			if (this.read_only) {
 				this.set_read_only();
-				frappe.show_alert(__("This form is not editable due to a Workflow."));
 			}
 
 			// check if doctype is already open
@@ -431,11 +430,6 @@ frappe.ui.form.Form = class FrappeForm {
 
 			// load the record for the first time, if not loaded (call 'onload')
 			this.trigger_onload(switched);
-
-			// if print format is shown, refresh the format
-			// if(this.print_preview.wrapper.is(":visible")) {
-			// 	this.print_preview.preview();
-			// }
 
 			if (switched) {
 				if (this.show_print_first && this.doc.docstatus === 1) {
@@ -729,6 +723,7 @@ frappe.ui.form.Form = class FrappeForm {
 		this.show_submit_message();
 		this.clear_custom_buttons();
 		this.show_web_link();
+		this.show_workflow_read_only_banner();
 	}
 
 	// SAVE
@@ -1185,8 +1180,6 @@ frappe.ui.form.Form = class FrappeForm {
 		} else if (this.doctype == "DocType") {
 			if (frappe.views.formview[docname] || frappe.pages["List/" + docname]) {
 				window.location.reload();
-				//	frappe.msgprint(__("Cannot open {0} when its instance is open", ['DocType']))
-				// throw 'doctype open conflict'
 			}
 		} else {
 			if (
@@ -1194,8 +1187,6 @@ frappe.ui.form.Form = class FrappeForm {
 				frappe.views.formview.DocType.frm.opendocs[this.doctype]
 			) {
 				window.location.reload();
-				//	frappe.msgprint(__("Cannot open instance when its {0} is open", ['DocType']))
-				// throw 'doctype open conflict'
 			}
 		}
 	}
@@ -1420,9 +1411,28 @@ frappe.ui.form.Form = class FrappeForm {
 		this.custom_buttons = {};
 	}
 
-	//Remove specific custom button by button Label
+	// Remove specific custom button by button Label
 	remove_custom_button(label, group) {
 		this.page.remove_inner_button(label, group);
+
+		// Remove actions from menu
+		delete this.custom_buttons[label];
+		let menu_item_label = group ? `${group} > ${label}` : label;
+		let $linkBody = this.page
+			.is_in_group_button_dropdown(
+				this.page.menu,
+				"li > a.grey-link > span",
+				menu_item_label
+			)
+			.parent()
+			.parent();
+
+		if ($linkBody) {
+			// If last button, remove divider too
+			let $divider = $linkBody.next(".dropdown-divider");
+			if ($divider) $divider.remove();
+			$linkBody.remove();
+		}
 	}
 
 	scroll_to_element() {
@@ -1937,9 +1947,10 @@ frappe.ui.form.Form = class FrappeForm {
 
 	scroll_to_field(fieldname, focus = true) {
 		let field = this.get_field(fieldname);
-		if (!field) return;
+		if (!field) return false;
 
 		let $el = field.$wrapper;
+		if (!$el || !$el.length) return false;
 
 		// set tab as active
 		if (field.tab && !field.tab.is_active()) {
@@ -1963,10 +1974,12 @@ frappe.ui.form.Form = class FrappeForm {
 
 		// highlight control inside field
 		let control_element = $el.closest(".frappe-control");
-		control_element.addClass("highlight");
-		setTimeout(() => {
-			control_element.removeClass("highlight");
-		}, 2000);
+		if (control_element.length) {
+			control_element.addClass("highlight");
+			setTimeout(() => {
+				control_element.removeClass("highlight");
+			}, 2000);
+		}
 		return true;
 	}
 
@@ -2143,6 +2156,26 @@ frappe.ui.form.Form = class FrappeForm {
 					wrapper.remove();
 				}
 			});
+	}
+
+	show_workflow_read_only_banner() {
+		if (!this.read_only) {
+			return;
+		}
+
+		const _show_read_only_banner = () => {
+			this.dashboard.set_headline(
+				__("This form is not editable due to a Workflow."),
+				"blue",
+				true
+			);
+		};
+
+		if (this.dashboard) {
+			_show_read_only_banner();
+		} else {
+			frappe.after_ajax(_show_read_only_banner);
+		}
 	}
 };
 
