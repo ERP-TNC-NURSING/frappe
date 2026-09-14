@@ -8,6 +8,7 @@ import mimetypes
 import os
 import sys
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
@@ -22,6 +23,7 @@ import frappe.sessions
 import frappe.utils
 from frappe import _
 from frappe.core.doctype.access_log.access_log import make_access_log
+from frappe.core.doctype.file.utils import check_path_safety
 from frappe.utils import format_timedelta
 
 if TYPE_CHECKING:
@@ -50,7 +52,18 @@ def report_error(status_code):
 			_link_error_with_message_log(error_log, exc_value, frappe.message_log)
 			frappe.local.response.errors = [error_log]
 
-	response = build_response("json")
+	try:
+		response = build_response("json")
+	except TypeError:
+		error_keys = ("exception", "exc_type", "errors")
+		frappe.local.response = frappe._dict(
+			{key: frappe.local.response[key] for key in error_keys if key in frappe.local.response}
+		)
+		try:
+			response = build_response("json")
+		except TypeError:
+			response = Response(json.dumps({"exc_type": exc_type.__name__}), mimetype="application/json")
+
 	response.status_code = status_code
 
 	return response
@@ -146,7 +159,7 @@ def as_pdf():
 	response = Response()
 	response.mimetype = "application/pdf"
 	filename = frappe.response["filename"].encode("utf-8").decode("unicode-escape", "ignore")
-	response.headers.add("Content-Disposition", None, filename=filename)
+	response.headers.add("Content-Disposition", "inline", filename=filename)
 	response.data = frappe.response["filecontent"]
 	return response
 
@@ -156,7 +169,7 @@ def as_binary():
 	response.mimetype = "application/octet-stream"
 	filename = frappe.response["filename"]
 	filename = filename.encode("utf-8").decode("unicode-escape", "ignore")
-	response.headers.add("Content-Disposition", None, filename=filename)
+	response.headers.add("Content-Disposition", "attachment", filename=filename)
 	response.data = frappe.response["filecontent"]
 	return response
 
@@ -237,6 +250,9 @@ def json_handler(obj):
 	elif isinstance(obj, uuid.UUID):
 		return str(obj)
 
+	elif isinstance(obj, Path):
+		return str(obj)
+
 	else:
 		raise TypeError(f"""Object of type {type(obj)} with value of {obj!r} is not JSON serializable""")
 
@@ -260,6 +276,13 @@ def download_backup(path):
 		raise Forbidden(
 			_("You need to be logged in and have System Manager Role to be able to access backups.")
 		)
+
+	filename = path.split("/backups/", 1)[1]
+	backup_path = frappe.get_site_path("private", "backups")
+	requested_path = frappe.get_site_path("private", "backups", filename)
+	is_safe = check_path_safety(base_path=backup_path, requested_path=requested_path)
+	if not is_safe:
+		frappe.throw(_("Invalid backup path"), frappe.PermissionError)
 
 	return send_private_file(path)
 
@@ -297,7 +320,22 @@ def send_private_file(path: str) -> Response:
 			raise NotFound
 
 		extension = os.path.splitext(path)[1]
-		blacklist = [".svg", ".html", ".htm", ".xml"]
+		blacklist = [
+			".svg",
+			".svgz",
+			".html",
+			".htm",
+			".xhtml",
+			".xht",
+			".shtml",
+			".shtm",
+			".mhtml",
+			".mht",
+			".xml",
+			".xsl",
+			".xslt",
+			".swf",
+		]
 		as_attachment = extension.lower() in blacklist
 
 		response = werkzeug.utils.send_file(

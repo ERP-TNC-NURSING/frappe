@@ -105,13 +105,6 @@ frappe.views.CommunicationComposer = class {
 				fieldtype: "Link",
 				options: "Email Template",
 				fieldname: "email_template",
-				get_query: () => {
-					return {
-						filters: {
-							use_html: me.dialog.get_value("use_html"),
-						},
-					};
-				},
 			},
 			{
 				fieldtype: "HTML",
@@ -249,7 +242,7 @@ frappe.views.CommunicationComposer = class {
 		let print_format_lang;
 		if (print_format != "Standard") {
 			print_format_lang = frappe.get_doc(
-				"Print Format",
+				":Print Format",
 				print_format
 			)?.default_print_language;
 		}
@@ -550,8 +543,8 @@ frappe.views.CommunicationComposer = class {
 			format = this.selected_format();
 		}
 
-		if (locals["Print Format"] && locals["Print Format"][format]) {
-			return locals["Print Format"][format];
+		if (locals[":Print Format"] && locals[":Print Format"][format]) {
+			return locals[":Print Format"][format];
 		} else {
 			return {};
 		}
@@ -827,6 +820,7 @@ frappe.views.CommunicationComposer = class {
 				print_letterhead: me.is_print_letterhead_checked(),
 				send_after: form_values.send_after ? form_values.send_after : null,
 				print_language: form_values.print_language,
+				in_reply_to: (this.is_a_reply && this.last_email?.name) || null,
 			},
 			btn,
 			callback(r) {

@@ -51,7 +51,7 @@ from .utils.jinja import (
 )
 from .utils.lazy_loader import lazy_import
 
-__version__ = "15.94.0"
+__version__ = "15.120.1"
 __title__ = "Frappe Framework"
 
 # This if block is never executed when running the code. It is only used for
@@ -87,6 +87,7 @@ controllers = {}
 local = Local()
 cache = None
 STANDARD_USERS = ("Guest", "Administrator")
+SITE_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 _one_time_setup = {}
 _dev_server = int(sbool(os.environ.get("DEV_SERVER", False)))
@@ -104,7 +105,6 @@ def _(msg: str, lang: str | None = None, context: str | None = None) -> str:
 	        _('Change', context='Coins')
 	"""
 	from frappe.translate import get_all_translations
-	from frappe.utils import is_html, strip_html_tags
 
 	if not hasattr(local, "lang"):
 		local.lang = lang or "en"
@@ -112,25 +112,33 @@ def _(msg: str, lang: str | None = None, context: str | None = None) -> str:
 	if not lang:
 		lang = local.lang
 
+	all_translations = get_all_translations(lang)
 	non_translated_string = msg
-
-	if is_html(msg):
-		msg = strip_html_tags(msg)
 
 	# msg should always be unicode
 	msg = as_unicode(msg).strip()
+	msg_with_html = as_unicode(non_translated_string).strip()
+	msg_list = [msg, msg_with_html]
 
-	translated_string = ""
+	for msg in msg_list:
+		translated_string = ""
 
-	all_translations = get_all_translations(lang)
-	if context:
-		string_key = f"{msg}:{context}"
-		translated_string = all_translations.get(string_key)
+		if context:
+			string_key = f"{msg}:{context}"
+			translated_string = all_translations.get(string_key)
 
-	if not translated_string:
-		translated_string = all_translations.get(msg)
+		if not translated_string:
+			translated_string = all_translations.get(msg)
 
-	return translated_string or non_translated_string
+		if translated_string:
+			return translated_string
+
+	return non_translated_string
+
+
+def N_(msg: str, context: str | None = None) -> str:
+	"""Mark a string for translation extraction without translating it."""
+	return msg
 
 
 def _lt(msg: str, lang: str | None = None, context: str | None = None):
@@ -194,6 +202,9 @@ def init(site: str, sites_path: str = ".", new_site: bool = False, force=False) 
 	if getattr(local, "initialised", None) and not force:
 		return
 
+	if site and not SITE_NAME_PATTERN.match(site):
+		raise ValueError(f"Invalid site name `{site}`")
+
 	local.error_log = []
 	local.message_log = []
 	local.debug_log = []
@@ -233,18 +244,18 @@ def init(site: str, sites_path: str = ".", new_site: bool = False, force=False) 
 
 	local.user = None
 	local.user_perms = None
-	local.session = None
 	local.role_permissions = {}
 	local.valid_columns = {}
 	local.new_doc_templates = {}
 
-	local.jenv = None
+	local.jenv_restricted = None
+	local.jenv_unrestricted = None
 	local.jloader = None
 	local.cache = {}
 	local.form_dict = _dict()
 	local.preload_assets = {"style": [], "script": [], "icons": []}
-	local.session = _dict()
-	local.dev_server = _dev_server
+	local.session = _dict(user="Guest")
+	local.dev_server = _dev_server  # only for backwards compatibility
 	local.qb = get_query_builder(local.conf.db_type)
 	local.qb.get_query = get_query
 	setup_redis_cache_connection()
@@ -283,6 +294,7 @@ def connect(site: str | None = None, db_name: str | None = None, set_admin_as_us
 		password=local.conf.db_password,
 		cur_db_name=local.conf.db_name or db_name,
 	)
+
 	if set_admin_as_user:
 		set_user("Administrator")
 
@@ -640,7 +652,8 @@ def set_user(username: str):
 	local.session.sid = username
 	local.cache = {}
 	local.form_dict = _dict()
-	local.jenv = None
+	local.jenv_restricted = None
+	local.jenv_unrestricted = None
 	local.session.data = _dict()
 	local.role_permissions = {}
 	local.new_doc_templates = {}
@@ -712,6 +725,7 @@ def sendmail(
 	email_read_tracker_url=None,
 	x_priority: Literal[1, 3, 5] = 3,
 	email_headers=None,
+	redact_message_after_send=False,
 ) -> Optional["EmailQueue"]:
 	"""Send email using user's default **Email Account** or global default **Email Account**.
 
@@ -741,6 +755,7 @@ def sendmail(
 	:param with_container: Wraps email inside a styled container
 	:param x_priority: 1 = HIGHEST, 3 = NORMAL, 5 = LOWEST
 	:param email_headers: Additional headers to be added in the email, e.g. {"X-Custom-Header": "value"} or {"Custom-Header": "value"}. Automatically prepends "X-" to the header name if not present.
+	:param redact_message_after_send: Replace the message body with a placeholder once sent, for emails carrying sensitive content.
 	"""
 
 	if recipients is None:
@@ -798,6 +813,7 @@ def sendmail(
 		email_read_tracker_url=email_read_tracker_url,
 		x_priority=x_priority,
 		email_headers=email_headers,
+		redact_message_after_send=redact_message_after_send,
 	)
 
 	# build email queue and send the email if send_now is True.
@@ -904,6 +920,7 @@ def read_only():
 def write_only():
 	# if replica connection exists, we have to replace it momentarily with the primary connection
 	def innfn(fn):
+		@functools.wraps(fn)
 		def wrapper_fn(*args, **kwargs):
 			primary_db = getattr(local, "primary_db", None)
 			replica_db = getattr(local, "replica_db", None)
@@ -990,6 +1007,7 @@ def clear_cache(user: str | None = None, doctype: str | None = None):
 
 		reset_metadata_version()
 		local.cache = {}
+		local.valid_columns = {}
 		local.new_doc_templates = {}
 
 		for fn in get_hooks("clear_cache"):
@@ -2147,6 +2165,9 @@ def attach_print(
 
 	print_settings = db.get_singles_dict("Print Settings")
 
+	if print_letterhead and not letterhead:
+		letterhead = get_cached_value("Letter Head", {"is_default": 1}, "name")
+
 	kwargs = dict(
 		print_format=print_format,
 		style=style,
@@ -2158,16 +2179,27 @@ def attach_print(
 
 	local.flags.ignore_print_permissions = True
 
+	is_weasyprint_print_format = False
+	if print_format and print_format != "Standard":
+		print_format_doc = get_cached_doc("Print Format", print_format)
+		is_weasyprint_print_format = print_format_doc.get("print_format_builder_beta")
+
 	with print_language(lang or local.lang):
 		content = ""
 		if cint(print_settings.send_print_as_pdf):
 			ext = ".pdf"
-			kwargs["as_pdf"] = True
-			content = (
-				get_pdf(html, options={"password": password} if password else None)
-				if html
-				else get_print(doctype, name, **kwargs)
-			)
+			if html:
+				content = get_pdf(html, options={"password": password} if password else None)
+			elif is_weasyprint_print_format:
+				from frappe.utils.weasyprint import PrintFormatGenerator
+
+				doc_obj = doc or get_cached_doc(doctype, name)
+				letterhead_name = letterhead if print_letterhead else None
+				generator = PrintFormatGenerator(print_format, doc_obj, letterhead_name)
+				content = generator.render_pdf()
+			else:
+				kwargs["as_pdf"] = True
+				content = get_print(doctype, name, **kwargs)
 		else:
 			ext = ".html"
 			content = html or scrub_urls(get_print(doctype, name, **kwargs)).encode("utf-8")
